@@ -65,23 +65,32 @@ def gemini_scenes(story, key, model, n, style):
               "image_prompt": "English में इस सीन की तस्वीर का वर्णन: कौन सा कैरेक्टर क्या कर रहा है, जगह, मूड। कैरेक्टर का पूरा वर्णन हर बार दोहराओ ताकि सब सीन में एक जैसा दिखे"}}]}}
 कहानी:
 {story}"""
-    model = pick_model(key, model)
-    st.session_state["used_model"] = model
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
+    cands = []
+    for m in [pick_model(key, model), model, "gemini-flash-latest", "gemini-2.5-flash", "gemini-2.0-flash"]:
+        if m and m not in cands:
+            cands.append(m)
     body = {"contents": [{"parts": [{"text": prompt}]}],
             "generationConfig": {"responseMimeType": "application/json", "temperature": 0.7}}
     last = None
-    for _ in range(3):
-        try:
-            r = requests.post(url, json=body, timeout=120)
-            r.raise_for_status()
-            txt = r.json()["candidates"][0]["content"]["parts"][0]["text"]
-            txt = re.sub(r"^```(?:json)?|```$", "", txt.strip()).strip()
-            data = json.loads(txt)
-            if data.get("scenes"):
-                return data
-        except Exception as e:
-            last = e
+    for m in cands:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent"
+        for _ in range(2):
+            try:
+                r = requests.post(url, params={"key": key}, json=body, timeout=120)
+                if r.status_code == 404:
+                    last = f"मॉडल {m} उपलब्ध नहीं"
+                    break
+                if not r.ok:
+                    last = f"{m}: {r.status_code} {r.text[:200]}"
+                    continue
+                txt = r.json()["candidates"][0]["content"]["parts"][0]["text"]
+                txt = re.sub(r"^```(?:json)?|```$", "", txt.strip()).strip()
+                data = json.loads(txt)
+                if data.get("scenes"):
+                    st.session_state["used_model"] = m
+                    return data
+            except Exception as e:
+                last = f"{m}: {e}"
     raise RuntimeError(f"Gemini से सीन नहीं बने: {last}")
 
 
