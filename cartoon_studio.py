@@ -72,25 +72,29 @@ def gemini_scenes(story, key, model, n, style):
     body = {"contents": [{"parts": [{"text": prompt}]}],
             "generationConfig": {"responseMimeType": "application/json", "temperature": 0.7}}
     last = None
+    # दो रास्ते: सामान्य Gemini API (AIza key) और Vertex express (AQ. key)
+    routes = [("https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent", "AI Studio"),
+              ("https://aiplatform.googleapis.com/v1/publishers/google/models/{m}:generateContent", "Vertex")]
     for m in cands:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent"
-        for _ in range(2):
-            try:
-                r = requests.post(url, params={"key": key}, json=body, timeout=120)
-                if r.status_code == 404:
-                    last = f"मॉडल {m} उपलब्ध नहीं"
-                    break
-                if not r.ok:
-                    last = f"{m}: {r.status_code} {r.text[:200]}"
-                    continue
-                txt = r.json()["candidates"][0]["content"]["parts"][0]["text"]
-                txt = re.sub(r"^```(?:json)?|```$", "", txt.strip()).strip()
-                data = json.loads(txt)
-                if data.get("scenes"):
-                    st.session_state["used_model"] = m
-                    return data
-            except Exception as e:
-                last = f"{m}: {e}"
+        for base, rname in routes:
+            url = base.format(m=m)
+            for _ in range(2):
+                try:
+                    r = requests.post(url, params={"key": key}, json=body, timeout=120)
+                    if r.status_code in (400, 401, 403, 404):
+                        last = f"{rname}/{m}: {r.status_code} {r.text[:160]}"
+                        break
+                    if not r.ok:
+                        last = f"{rname}/{m}: {r.status_code} {r.text[:160]}"
+                        continue
+                    txt = r.json()["candidates"][0]["content"]["parts"][0]["text"]
+                    txt = re.sub(r"^```(?:json)?|```$", "", txt.strip()).strip()
+                    data = json.loads(txt)
+                    if data.get("scenes"):
+                        st.session_state["used_model"] = f"{m} ({rname})"
+                        return data
+                except Exception as e:
+                    last = f"{rname}/{m}: {e}"
     raise RuntimeError(f"Gemini से सीन नहीं बने: {last}")
 
 
