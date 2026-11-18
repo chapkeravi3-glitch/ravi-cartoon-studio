@@ -57,13 +57,25 @@ def pick_model(key, wanted):
     return pool[0] if pool else wanted
 
 
-def gemini_scenes(story, key, model, n, style):
-    prompt = f"""तुम एक कार्टून एनिमेशन डायरेक्टर हो। नीचे की कहानी को ठीक {n} सीन में बाँटो।
+def gemini_scenes(story, key, model, n, style, genre="अपने-आप पहचानो"):
+    prompt = f"""तुम एक कार्टून एनिमेशन डायरेक्टर हो। नीचे की स्क्रिप्ट (कहानी, खबर, क्रिकेट, तथ्य - कुछ भी) को ठीक {n} सीन में बाँटो।
+स्क्रिप्ट का प्रकार: {genre}
+सख़्त नियम:
+- हर सीन की तस्वीर में कम से कम एक कार्टून कैरेक्टर साफ़ दिखे जो उस सीन का काम कर रहा हो। खाली मैदान, सिर्फ़ फूल या सिर्फ़ नज़ारा बिल्कुल नहीं।
+- स्क्रिप्ट किसी भी तरह की हो, विषय के हिसाब से कैरेक्टर बनाओ:
+  * कहानी: कहानी के पात्र (इंसान, जानवर, राजा आदि)।
+  * फ़िल्मी: फ़िल्म के हीरो, हीरोइन, विलेन जैसे अलग दिखने वाले कार्टून पात्र, उनके रोल और कपड़ों से।
+  * ऐतिहासिक: उस दौर के कपड़ों वाले राजा, सैनिक, आम लोग, दरबार, किला, युद्ध का माहौल।
+  * फैक्ट/जानकारी: एक कार्टून होस्ट (प्रोफ़ेसर या गाइड जैसा) जो चीज़ें दिखाकर समझा रहा हो, और विषय की चीज़ें (जैसे ग्रह, जानवर, मशीन) कार्टून रूप में।
+  * खेल/खबर: खिलाड़ी, भीड़, कमेंटेटर या एंकर।
+- असली या मशहूर लोगों और फ़िल्मी किरदारों के नाम तस्वीर के वर्णन में मत लिखो। उनकी जगह भूमिका, उम्र, कपड़े और रंग लिखो (जैसे "cartoon Mughal emperor in white robe and jeweled turban")।
+- हर सीन में विषय की चीज़ें दिखें और कैरेक्टर का हावभाव/एक्शन साफ़ लिखो।
+- narration में स्क्रिप्ट की बात ही रखो, अपनी तरफ़ से बातें मत जोड़ो।
 सिर्फ़ JSON लौटाओ, इस रूप में:
-{{"characters": {{"नाम": "English में कैरेक्टर का पूरा फ़िक्स्ड वर्णन: उम्र, कपड़े के रंग, बाल, चेहरा, खास निशानी"}},
+{{"characters": {{"नाम/भूमिका": "English में कैरेक्टर का पूरा फ़िक्स्ड वर्णन: कपड़े के रंग, चेहरा, बाल, खास निशानी"}},
  "scenes": [{{"narration": "इस सीन की हिंदी नैरेशन (2-3 छोटे वाक्य, बोलने लायक)",
-              "image_prompt": "English में इस सीन की तस्वीर का वर्णन: कौन सा कैरेक्टर क्या कर रहा है, जगह, मूड। कैरेक्टर का पूरा वर्णन हर बार दोहराओ ताकि सब सीन में एक जैसा दिखे"}}]}}
-कहानी:
+              "image_prompt": "English में: कौन-से कार्टून कैरेक्टर (पूरा वर्णन हर बार दोहराओ) क्या एक्शन कर रहे हैं, जगह, चीज़ें, मूड। शुरुआत कैरेक्टर से करो"}}]}}
+स्क्रिप्ट:
 {story}"""
     cands = []
     for m in [pick_model(key, model), model, "gemini-flash-latest", "gemini-2.5-flash", "gemini-2.0-flash"]:
@@ -114,22 +126,61 @@ def fallback_image(seed):
     return img
 
 
-def make_image(prompt, path, seed, style_txt):
-    full = f"{prompt}, {style_txt}, no text, no watermark, high quality"
+def gemini_image(prompt, key):
+    """Pollinations न चले तो Gemini की इमेज से तस्वीर बनाओ (दोनों रास्ते)।"""
+    body = {"contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {"responseModalities": ["TEXT", "IMAGE"]}}
+    routes = ["https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent",
+              "https://aiplatform.googleapis.com/v1/publishers/google/models/{m}:generateContent"]
+    for m in ["gemini-2.5-flash-image", "gemini-2.0-flash-preview-image-generation"]:
+        for base in routes:
+            try:
+                r = requests.post(base.format(m=m), params={"key": key}, json=body, timeout=120)
+                if not r.ok:
+                    continue
+                for p in r.json()["candidates"][0]["content"]["parts"]:
+                    d = p.get("inlineData") or p.get("inline_data")
+                    if d:
+                        import base64
+                        return Image.open(io.BytesIO(base64.b64decode(d["data"]))).convert("RGB")
+            except Exception:
+                continue
+    return None
+
+
+def make_image(prompt, path, seed, style_txt, key="", allow_blank=False, msg=None):
+    import time
+    full = (f"{prompt}, {style_txt}, cartoon characters clearly visible in the foreground, "
+            "no text, no watermark, high quality")
     url = ("https://image.pollinations.ai/prompt/" + urllib.parse.quote(full)
            + f"?width=1280&height=720&seed={seed}&nologo=true&model=flux")
-    for attempt in range(3):
+    for attempt in range(4):
+        # मुफ़्त सर्विस में दो तस्वीरों के बीच ~16 सेकंड का अंतर चाहिए
+        wait = 16 - (time.time() - st.session_state.get("last_img", 0))
+        if wait > 0:
+            if msg:
+                msg.info(f"मुफ़्त सर्विस के नियम से {int(wait)+1} सेकंड रुक रहा हूँ...")
+            time.sleep(wait)
+        st.session_state["last_img"] = time.time()
         try:
-            r = requests.get(url, timeout=120)
+            r = requests.get(url, timeout=150)
             if r.ok and r.headers.get("content-type", "").startswith("image"):
                 img = Image.open(io.BytesIO(r.content)).convert("RGB")
                 img.resize((1920, 1080)).save(path, quality=92)
-                return True
+                return
         except Exception:
             pass
         seed += 7
-    fallback_image(seed).save(path, quality=92)
-    return False
+    if key:
+        img = gemini_image(full, key)
+        if img is not None:
+            img.resize((1920, 1080)).save(path, quality=92)
+            return
+    if allow_blank:
+        fallback_image(seed).save(path, quality=92)
+        return
+    raise RuntimeError("कार्टून तस्वीर नहीं बन पाई (इमेज सर्विस अभी व्यस्त है)। "
+                       "दोबारा दबाओ - जो सीन बन चुके हैं वे दोबारा नहीं बनेंगे।")
 
 
 def make_voice(text, path, voice):
@@ -181,8 +232,10 @@ with st.sidebar:
     gmodel = st.text_input("Gemini मॉडल (न चले तो अपने-आप बदल जाएगा)", value="gemini-2.5-flash")
     gkey = gkey.strip().strip('"').strip("'")
     style_name = st.selectbox("कार्टून स्टाइल", list(STYLES))
+    genre = st.selectbox("स्क्रिप्ट किस तरह की है", ["अपने-आप पहचानो", "कहानी", "फ़िल्मी", "ऐतिहासिक", "फैक्ट/जानकारी", "खेल/खबर"])
     voice_name = st.selectbox("आवाज़", list(VOICES))
     n_scenes = st.slider("कितने सीन", 4, 20, 10)
+    allow_blank = st.checkbox("तस्वीर न बने तो सादा बैकग्राउंड लगाओ", value=False)
     music = st.file_uploader("बैकग्राउंड म्यूज़िक (वैकल्पिक)", type=["mp3", "wav", "m4a"])
     if st.button("🗑️ सब कैश साफ़ करो"):
         shutil.rmtree(ROOT, ignore_errors=True)
@@ -191,7 +244,7 @@ with st.sidebar:
 
 story = st.text_area("अपनी कहानी यहाँ डालो", height=220,
                      placeholder="एक बार की बात है, एक छोटा सा शेर जंगल में खो गया...")
-pid = hashlib.md5((story + style_name + str(n_scenes)).encode()).hexdigest()[:10]
+pid = hashlib.md5((story + style_name + str(n_scenes) + genre + "v3").encode()).hexdigest()[:10]
 pdir = os.path.join(ROOT, pid)
 os.makedirs(pdir, exist_ok=True)
 scene_file = os.path.join(pdir, "scenes.json")
@@ -203,7 +256,7 @@ if c1.button("1️⃣ सीन बनाओ", use_container_width=True):
     else:
         with st.spinner("कहानी को सीन में बाँट रहा हूँ..."):
             try:
-                data = gemini_scenes(story, gkey, gmodel, n_scenes, style_name)
+                data = gemini_scenes(story, gkey, gmodel, n_scenes, style_name, genre)
                 json.dump(data, open(scene_file, "w"), ensure_ascii=False)
                 st.session_state["pid"] = pid
                 st.success(f"सीन बन गए (मॉडल: {st.session_state.get('used_model')})")
@@ -246,7 +299,7 @@ if os.path.exists(scene_file):
                     continue
                 if not os.path.exists(ip):
                     msg.info(f"सीन {i+1}: कार्टून तस्वीर बन रही है...")
-                    make_image(s["image_prompt"], ip, 1000 + i * 13, STYLES[style_name])
+                    make_image(s["image_prompt"], ip, 1000 + i * 13, STYLES[style_name], gkey, allow_blank, msg)
                 if not os.path.exists(ap):
                     msg.info(f"सीन {i+1}: आवाज़ बन रही है...")
                     make_voice(s["narration"], ap, VOICES[voice_name])
