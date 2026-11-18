@@ -38,6 +38,25 @@ def audio_len(path):
     return float(out.strip())
 
 
+def pick_model(key, wanted):
+    """Google के पास जो मॉडल अभी चालू हैं, उनमें से सही वाला अपने-आप चुनो।"""
+    try:
+        r = requests.get("https://generativelanguage.googleapis.com/v1beta/models",
+                         params={"key": key, "pageSize": 200}, timeout=30)
+        r.raise_for_status()
+        names = [m["name"].split("/")[-1] for m in r.json().get("models", [])
+                 if "generateContent" in m.get("supportedGenerationMethods", [])]
+    except Exception:
+        return wanted
+    if wanted in names:
+        return wanted
+    bad = ("lite", "image", "tts", "live", "audio", "embed", "vision", "robotics", "computer")
+    flash = sorted([n for n in names if "flash" in n and not any(b in n for b in bad)], reverse=True)
+    stable = [n for n in flash if "preview" not in n and "exp" not in n]
+    pool = stable or flash or names
+    return pool[0] if pool else wanted
+
+
 def gemini_scenes(story, key, model, n, style):
     prompt = f"""तुम एक कार्टून एनिमेशन डायरेक्टर हो। नीचे की कहानी को ठीक {n} सीन में बाँटो।
 सिर्फ़ JSON लौटाओ, इस रूप में:
@@ -46,6 +65,8 @@ def gemini_scenes(story, key, model, n, style):
               "image_prompt": "English में इस सीन की तस्वीर का वर्णन: कौन सा कैरेक्टर क्या कर रहा है, जगह, मूड। कैरेक्टर का पूरा वर्णन हर बार दोहराओ ताकि सब सीन में एक जैसा दिखे"}}]}}
 कहानी:
 {story}"""
+    model = pick_model(key, model)
+    st.session_state["used_model"] = model
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
     body = {"contents": [{"parts": [{"text": prompt}]}],
             "generationConfig": {"responseMimeType": "application/json", "temperature": 0.7}}
@@ -144,7 +165,8 @@ key_default = st.secrets.get("GEMINI_API_KEY", "") if hasattr(st, "secrets") els
 with st.sidebar:
     st.header("सेटिंग")
     gkey = st.text_input("Gemini API Key", value=key_default, type="password")
-    gmodel = st.text_input("Gemini मॉडल", value="gemini-2.5-flash")
+    gmodel = st.text_input("Gemini मॉडल (न चले तो अपने-आप बदल जाएगा)", value="gemini-2.5-flash")
+    gkey = gkey.strip().strip('"').strip("'")
     style_name = st.selectbox("कार्टून स्टाइल", list(STYLES))
     voice_name = st.selectbox("आवाज़", list(VOICES))
     n_scenes = st.slider("कितने सीन", 4, 20, 10)
@@ -171,6 +193,7 @@ if c1.button("1️⃣ सीन बनाओ", use_container_width=True):
                 data = gemini_scenes(story, gkey, gmodel, n_scenes, style_name)
                 json.dump(data, open(scene_file, "w"), ensure_ascii=False)
                 st.session_state["pid"] = pid
+                st.success(f"सीन बन गए (मॉडल: {st.session_state.get('used_model')})")
             except Exception as e:
                 st.error(str(e))
 
