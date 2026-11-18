@@ -58,6 +58,7 @@ def pick_model(key, wanted):
 
 
 def gemini_scenes(story, key, model, n, style, genre="अपने-आप पहचानो"):
+    story = re.sub(r"^\s*सीन\s*\d+\s*[:：.\-]\s*", "", story, flags=re.M)  # "सीन 1:" जैसे लेबल हटाओ
     prompt = f"""तुम एक कार्टून एनिमेशन डायरेक्टर हो। नीचे की स्क्रिप्ट (कहानी, खबर, क्रिकेट, तथ्य - कुछ भी) को ठीक {n} सीन में बाँटो।
 स्क्रिप्ट का प्रकार: {genre}
 सख़्त नियम:
@@ -107,7 +108,22 @@ def gemini_scenes(story, key, model, n, style, genre="अपने-आप पह
                         return data
                 except Exception as e:
                     last = f"{rname}/{m}: {e}"
-    raise RuntimeError(f"Gemini से सीन नहीं बने: {last}")
+    # आख़िरी रास्ता: बिना key और बिना बिलिंग वाला मुफ़्त टेक्स्ट AI (Pollinations)
+    try:
+        r = requests.post("https://text.pollinations.ai/openai",
+                          json={"model": "openai", "response_format": {"type": "json_object"},
+                                "messages": [{"role": "user", "content": prompt}]}, timeout=180)
+        if r.ok:
+            txt = r.json()["choices"][0]["message"]["content"]
+            txt = re.sub(r"^```(?:json)?|```$", "", txt.strip()).strip()
+            data = json.loads(txt)
+            if data.get("scenes"):
+                st.session_state["used_model"] = "मुफ़्त Pollinations AI"
+                return data
+        last = f"{last} | Pollinations: {r.status_code} {r.text[:120]}"
+    except Exception as e:
+        last = f"{last} | Pollinations: {e}"
+    raise RuntimeError(f"सीन नहीं बने: {last}")
 
 
 def fallback_image(seed):
