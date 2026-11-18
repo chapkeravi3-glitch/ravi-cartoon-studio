@@ -57,6 +57,27 @@ def pick_model(key, wanted):
     return pool[0] if pool else wanted
 
 
+def parse_scenes(raw):
+    """AI के जवाब से JSON निकालो (गंदे अक्षर/कोड-ब्लॉक हों तब भी)।"""
+    txt = raw
+    try:
+        j = json.loads(raw, strict=False)
+        if isinstance(j, dict) and "choices" in j:
+            txt = j["choices"][0]["message"]["content"]
+        elif isinstance(j, dict) and "scenes" in j:
+            return j
+    except Exception:
+        pass
+    txt = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", txt)
+    a, b = txt.find("{"), txt.rfind("}")
+    if a == -1 or b == -1:
+        raise ValueError("JSON नहीं मिला: " + txt[:120])
+    data = json.loads(txt[a:b + 1], strict=False)
+    if not data.get("scenes"):
+        raise ValueError("scenes खाली")
+    return data
+
+
 def gemini_scenes(story, key, model, n, style, genre="अपने-आप पहचानो"):
     story = re.sub(r"^\s*सीन\s*\d+\s*[:：.\-]\s*", "", story, flags=re.M)  # "सीन 1:" जैसे लेबल हटाओ
     prompt = f"""तुम एक कार्टून एनिमेशन डायरेक्टर हो। नीचे की स्क्रिप्ट (कहानी, खबर, क्रिकेट, तथ्य - कुछ भी) को ठीक {n} सीन में बाँटो।
@@ -101,28 +122,28 @@ def gemini_scenes(story, key, model, n, style, genre="अपने-आप पह
                         last = f"{rname}/{m}: {r.status_code} {r.text[:160]}"
                         continue
                     txt = r.json()["candidates"][0]["content"]["parts"][0]["text"]
-                    txt = re.sub(r"^```(?:json)?|```$", "", txt.strip()).strip()
-                    data = json.loads(txt)
-                    if data.get("scenes"):
-                        st.session_state["used_model"] = f"{m} ({rname})"
-                        return data
+                    data = parse_scenes(txt)
+                    st.session_state["used_model"] = f"{m} ({rname})"
+                    return data
                 except Exception as e:
                     last = f"{rname}/{m}: {e}"
     # आख़िरी रास्ता: बिना key और बिना बिलिंग वाला मुफ़्त टेक्स्ट AI (Pollinations)
-    try:
-        r = requests.post("https://text.pollinations.ai/openai",
-                          json={"model": "openai", "response_format": {"type": "json_object"},
-                                "messages": [{"role": "user", "content": prompt}]}, timeout=180)
-        if r.ok:
-            txt = r.json()["choices"][0]["message"]["content"]
-            txt = re.sub(r"^```(?:json)?|```$", "", txt.strip()).strip()
-            data = json.loads(txt)
-            if data.get("scenes"):
+    for attempt in range(3):
+        try:
+            r = requests.post("https://text.pollinations.ai/openai",
+                              json={"model": "openai",
+                                    "messages": [{"role": "user", "content": prompt}]}, timeout=180)
+            if r.ok:
+                data = parse_scenes(r.text)
                 st.session_state["used_model"] = "मुफ़्त Pollinations AI"
                 return data
-        last = f"{last} | Pollinations: {r.status_code} {r.text[:120]}"
-    except Exception as e:
-        last = f"{last} | Pollinations: {e}"
+            last = f"{last} | Pollinations: {r.status_code} {r.text[:120]}"
+        except Exception as e:
+            last = f"{last} | Pollinations: {e}"
+            try:
+                last += f" [जवाब: {r.text[:100]!r}]"
+            except Exception:
+                pass
     raise RuntimeError(f"सीन नहीं बने: {last}")
 
 
